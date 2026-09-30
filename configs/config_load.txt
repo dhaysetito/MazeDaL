@@ -1,0 +1,2 @@
+LOAD_FILE=maze_5x5.txt
+ALGORITHM=DFS
