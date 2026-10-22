@@ -1,13 +1,14 @@
 """Controle de movimento do MazeDaL (NodeMCU ESP8266 + L298N).
 
-API exigida por main.py:
+API exigida por runner.py:
     controller.update(readings)
     controller.stop()
 
 Camadas:
     Motor      -> um lado do L298N (pinos IN de direcao)
     DriveBase  -> dois motores + enable compartilhado (PWM de velocidade)
-    Controller -> recebe as leituras dos sensores e decide o movimento
+    Controller -> executa as acoes escolhidas por uma estrategia
+                  (strategies.py: left_hand, dfs) a partir dos sensores
 
 Os numeros de GPIO vem de pinout.py. Importar este modulo no computador nao
 aciona nenhum pino: so build_drivebase() usa o modulo machine.
@@ -23,6 +24,8 @@ except ImportError:
 
     def ticks_diff(a, b):
         return a - b
+
+from strategies import LeftHand
 
 # machine.PWM do ESP8266 usa duty de 0 a 1023.
 MAX_DUTY = 1023
@@ -117,58 +120,92 @@ def build_drivebase(freq=1000):
 
 
 class Controller:
-    """Maquina de estados simples, nao bloqueante (compativel com main.run).
+    """Executa as acoes de uma estrategia (strategies.py) sem bloquear.
 
-    Estados: forward, turning_left, turning_right, stopped.
-    Os giros sao por TEMPO, entao turn_90_ms precisa ser calibrado no robo.
+    A estrategia decide (esquerda, frente, passo de uma celula, ...); o
+    Controller move o DriveBase e mede o tempo dos giros e passos. Chame
+    update(readings) em loop, compativel com runner.run.
+
+    Estados: stopped, forward, stepping, turning_left, turning_right.
+    Giros e passos sao por TEMPO, entao turn_90_ms e step_ms precisam ser
+    calibrados no robo.
 
     `readings` vem de sensors.read_all(): nome -> distancia em mm, com as
     chaves "left", "front" e "right" (os nomes de pinout.SENSOR_CONFIG).
-    Uma distancia menor que wall_mm conta como parede.
+    Uma distancia menor que wall_mm conta como parede; leitura None (falha
+    do sensor) tambem conta como parede.
     """
 
-    def __init__(self, drive, turn_90_ms=450, wall_mm=150):
+    def __init__(
+        self, drive, strategy=None, turn_90_ms=450, step_ms=800, wall_mm=150
+    ):
         self.drive = drive
+        self.strategy = strategy if strategy is not None else LeftHand()
         self.turn_90_ms = turn_90_ms
+        self.step_ms = step_ms
         self.wall_mm = wall_mm
         self.state = "stopped"
-        self._turn_start = 0
-        self._turn_total_ms = 0
+        self.finished = False  # True quando a estrategia pediu "stop"
+        self._action = None
+        self._start = 0
+        self._total_ms = 0
 
-    def _start_turn(self, state, degrees):
+    def _is_wall(self, distance):
+        return distance is None or distance < self.wall_mm
+
+    def _walls(self, readings):
+        return {
+            "left": self._is_wall(readings["left"]),
+            "front": self._is_wall(readings["front"]),
+            "right": self._is_wall(readings["right"]),
+        }
+
+    def _start_timed(self, action, state, total_ms):
+        self._action = action
         self.state = state
-        self._turn_total_ms = self.turn_90_ms * degrees // 90
-        self._turn_start = ticks_ms()
-        if state == "turning_left":
-            self.drive.turn_left()
-        else:
-            self.drive.turn_right()
+        self._total_ms = total_ms
+        self._start = ticks_ms()
 
-    def _turn_done(self):
-        return ticks_diff(ticks_ms(), self._turn_start) >= self._turn_total_ms
+    def _timed_done(self):
+        return ticks_diff(ticks_ms(), self._start) >= self._total_ms
+
+    def _execute(self, action):
+        if action == "forward":
+            self.state = "forward"
+            self.drive.forward()
+        elif action == "step":
+            self._start_timed("step", "stepping", self.step_ms)
+            self.drive.forward()
+        elif action == "left":
+            self._start_timed("left", "turning_left", self.turn_90_ms)
+            self.drive.turn_left()
+        elif action == "right":
+            self._start_timed("right", "turning_right", self.turn_90_ms)
+            self.drive.turn_right()
+        elif action == "around":
+            self._start_timed("around", "turning_right", self.turn_90_ms * 2)
+            self.drive.turn_right()
+        elif action == "stop":
+            self.stop()
+            self.finished = True
+        else:
+            raise ValueError("Acao desconhecida: %s" % action)
 
     def update(self, readings):
-        if self.state in ("turning_left", "turning_right"):
-            if not self._turn_done():
+        if self.finished:
+            return
+
+        if self.state in ("stepping", "turning_left", "turning_right"):
+            if not self._timed_done():
                 return
             self.drive.stop()
             self.state = "stopped"
+            done, self._action = self._action, None
+            self.strategy.on_done(done)
 
-        left = readings["left"] < self.wall_mm
-        front = readings["front"] < self.wall_mm
-        right = readings["right"] < self.wall_mm
-
-        # Regra da mao esquerda: esquerda livre > frente livre > direita > meia-volta
-        if not left:
-            self._start_turn("turning_left", 90)
-        elif not front:
-            self.state = "forward"
-            self.drive.forward()
-        elif not right:
-            self._start_turn("turning_right", 90)
-        else:
-            self._start_turn("turning_right", 180)
+        self._execute(self.strategy.decide(self._walls(readings)))
 
     def stop(self):
         self.drive.stop()
         self.state = "stopped"
+        self._action = None

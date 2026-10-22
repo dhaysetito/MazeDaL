@@ -104,3 +104,26 @@ portanto os dois motores sempre recebem a mesma velocidade. Ela pode ser
 ajustada por `MOTOR_SPEED` e `TURN_SPEED` em `main_test_control.py`. Mantenha
 as rodas do robo suspensas no primeiro teste e confirme se cada motor gira no
 sentido esperado antes de coloca-lo no chao.
+
+## Escolha do algoritmo
+
+O algoritmo e escolhido em `robot_config.py` (`ALGORITHM`):
+
+| Valor | Comportamento |
+|---|---|
+| `"left_hand"` | Regra da mao esquerda: reativa, sem mapa, nunca para sozinha. |
+| `"dfs"` | O DFS de `simulation/solver.py`: guarda posicao, celulas visitadas e pilha; tenta vizinhos na ordem N, E, S, W, volta pela pilha e para na saida. |
+
+O `dfs` usa `ENTRY`, `EXIT` e `START_HEADING` (o robo deve comecar centralizado
+na celula de entrada, olhando para essa direcao). Ele estima a posicao
+contando passos e giros por tempo, entao `STEP_MS` e `TURN_90_MS` precisam ser
+calibrados; sem encoders a posicao pode derivar.
+
+`control.Controller` so executa acoes; as decisoes ficam em `strategies.py`.
+Para adicionar um algoritmo, crie uma classe com `decide(walls)` e
+`on_done(action)` e registre-a em `make_strategy`. O loop principal e
+`runner.run` (usado por `hardware.start()`).
+
+Testes no computador (comparam o DFS do robo com `MazeSolver`):
+
+    cd robot && python3 test_strategies.py
