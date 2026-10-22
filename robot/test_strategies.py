@@ -170,7 +170,13 @@ class LeftHandBehavior(unittest.TestCase):
     def test_steps_after_turning(self):
         s = LeftHand()
         s.decide({"left": False, "front": True, "right": True})
-        self.assertEqual(s.decide({"left": False, "front": True, "right": True}), "step")
+        self.assertEqual(s.decide({"left": True, "front": False, "right": True}), "step")
+
+    def test_drops_step_when_front_blocked(self):
+        s = LeftHand()
+        s.decide({"left": False, "front": True, "right": True})  # -> "left"
+        blocked = {"left": True, "front": True, "right": True}
+        self.assertEqual(s.decide(blocked), "around")  # passo descartado
 
     def test_reaches_exit_in_perfect_maze(self):
         maze, entry, exit_ = load("maze_5x5.txt")
@@ -187,6 +193,74 @@ class ControllerRobustness(unittest.TestCase):
                 readings=lambda w: {"left": None, "front": None, "right": None},
                 limit=500,
             )
+
+    def test_none_readings_hold_then_resume_with_same_route(self):
+        maze, entry, exit_ = load("maze_5x5.txt")
+        expected = sim_traversal(maze, entry, exit_)
+        calls = [0]
+
+        def flaky(world):
+            calls[0] += 1
+            r = world.readings()
+            if calls[0] % 3 == 0:  # nunca 5 falhas seguidas
+                r["front"] = None
+            return r
+
+        strategy = DFS(entry, exit_)
+        world, controller = drive(maze, entry, exit_, strategy, readings=flaky)
+        self.assertTrue(controller.finished)
+        self.assertIsNone(controller.error)
+        self.assertEqual(strategy.path, expected)
+
+    def test_persistent_sensor_failure_stops_with_error(self):
+        maze, entry, exit_ = load("maze_5x5.txt")
+        dead = lambda w: {"left": None, "front": None, "right": None}  # noqa: E731
+        world, controller = drive(maze, entry, exit_, LeftHand(), readings=dead, limit=100)
+        self.assertTrue(controller.finished)
+        self.assertEqual(controller.error, "sensor")
+        self.assertEqual(world.cmd, "stop")
+
+    def test_none_during_turn_does_not_interrupt_it(self):
+        maze, entry, exit_ = load("maze_5x5.txt")
+        world = World(maze, entry)
+        control.ticks_ms = lambda: world.now
+        controller = Controller(world, DFS(entry, exit_), turn_90_ms=TURN_90_MS, step_ms=STEP_MS)
+        controller.update(world.readings())  # DFS na entrada: comeca o giro de reconhecimento
+        self.assertEqual(controller.state, "turning_right")
+        for _ in range(10):
+            world.tick()
+            controller.update({"left": None, "front": None, "right": None})
+        self.assertEqual(controller.state, "turning_right")
+        self.assertEqual(controller._failed_reads, 0)
+
+    def test_dfs_stops_when_front_blocked_at_step(self):
+        closed = {"left": True, "front": True, "right": True}
+        dfs = DFS((1, 1), (0, 0), "N")
+        # olhando N: so a oeste (esquerda) esta livre
+        self.assertEqual(dfs.decide({"left": False, "front": True, "right": True}), "around")
+        dfs.on_done("around")  # agora olhando S: oeste e a direita
+        self.assertEqual(dfs.decide({"left": True, "front": True, "right": False}), "right")
+        dfs.on_done("right")  # olhando W
+        self.assertEqual(dfs.decide(closed), "stop")  # parede onde devia haver passo
+        self.assertIn("parede", dfs.error)
+        self.assertEqual(dfs.pos, (1, 1))  # posicao nao avancou
+
+    def test_controller_reports_strategy_error(self):
+        facing_n = {"left": 500, "front": 50, "right": 50}
+        facing_s = {"left": 50, "front": 50, "right": 500}
+        closed = {"left": 50, "front": 50, "right": 50}
+        world = World(*load("maze_5x5.txt")[:2])
+        control.ticks_ms = lambda: world.now
+        controller = Controller(
+            world, DFS((1, 1), (0, 0), "N"), turn_90_ms=TURN_90_MS, step_ms=STEP_MS
+        )
+        for reading in (facing_n, facing_s, closed):
+            controller.update(reading)  # decide e comeca a acao
+            while controller.state != "stopped":
+                world.tick()
+                controller.update(reading)  # ultimo update so conclui a acao
+        self.assertTrue(controller.finished)
+        self.assertIn("parede", controller.error)
 
     def test_default_strategy_is_left_hand(self):
         self.assertIsInstance(Controller(None).strategy, LeftHand)

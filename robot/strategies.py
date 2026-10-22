@@ -32,7 +32,10 @@ class LeftHand:
 
     def decide(self, walls):
         if self._plan:
-            return self._plan.pop(0)
+            action = self._plan.pop(0)
+            if action != "step" or not walls["front"]:
+                return action
+            # Parede a frente: descarta o passo e decide de novo.
         if not walls["left"]:
             action = "left"
         elif not walls["front"]:
@@ -73,6 +76,7 @@ class DFS:
         self._plan = []
         self._move = None
         self._scan = None
+        self.error = None
 
     def _turn(self, delta):
         index = DIRECTIONS.index(self.heading)
@@ -119,7 +123,14 @@ class DFS:
 
     def decide(self, walls):
         if self._plan:
-            return self._plan.pop(0)
+            action = self._plan.pop(0)
+            if action == "step" and walls["front"]:
+                # O mapa interno nao bate com o labirinto (patinagem?).
+                self._plan = []
+                self._move = None
+                self.error = "parede a frente ao dar o passo (posicao derivou)"
+                return "stop"
+            return action
         if self.pos == self.exit:
             return "stop"
         if not self._sense_cell(walls):

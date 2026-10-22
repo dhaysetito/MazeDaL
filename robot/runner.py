@@ -32,3 +32,5 @@ def run(sensors, controller, interval_ms=LOOP_INTERVAL_MS):
         controller.stop()
         sensors.shutdown()
         print("Motores parados e sensores desligados.")
+        if controller.error:
+            print("Parou por erro:", controller.error)

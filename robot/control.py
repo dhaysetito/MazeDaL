@@ -132,32 +132,42 @@ class Controller:
 
     `readings` vem de sensors.read_all(): nome -> distancia em mm, com as
     chaves "left", "front" e "right" (os nomes de pinout.SENSOR_CONFIG).
-    Uma distancia menor que wall_mm conta como parede; leitura None (falha
-    do sensor) tambem conta como parede.
+    Uma distancia menor que wall_mm conta como parede. Se algum sensor falhar
+    (None) na hora de decidir, o robo para e tenta de novo no proximo ciclo;
+    apos max_failed_reads falhas seguidas ele desiste (finished, error="sensor").
+    Giros e passos nao dependem dos sensores, entao nao sao interrompidos.
+    Depois de cada giro ou passo a decisao espera o ciclo seguinte, para usar
+    leituras feitas com o robo parado.
     """
 
     def __init__(
-        self, drive, strategy=None, turn_90_ms=450, step_ms=800, wall_mm=150
+        self,
+        drive,
+        strategy=None,
+        turn_90_ms=450,
+        step_ms=800,
+        wall_mm=150,
+        max_failed_reads=5,
     ):
         self.drive = drive
         self.strategy = strategy if strategy is not None else LeftHand()
         self.turn_90_ms = turn_90_ms
         self.step_ms = step_ms
         self.wall_mm = wall_mm
+        self.max_failed_reads = max_failed_reads
         self.state = "stopped"
-        self.finished = False  # True quando a estrategia pediu "stop"
+        self.finished = False  # True quando a estrategia pediu "stop" ou houve erro
+        self.error = None  # motivo da parada anormal, se houver
+        self._failed_reads = 0
         self._action = None
         self._start = 0
         self._total_ms = 0
 
-    def _is_wall(self, distance):
-        return distance is None or distance < self.wall_mm
-
     def _walls(self, readings):
         return {
-            "left": self._is_wall(readings["left"]),
-            "front": self._is_wall(readings["front"]),
-            "right": self._is_wall(readings["right"]),
+            "left": readings["left"] < self.wall_mm,
+            "front": readings["front"] < self.wall_mm,
+            "right": readings["right"] < self.wall_mm,
         }
 
     def _start_timed(self, action, state, total_ms):
@@ -188,6 +198,7 @@ class Controller:
         elif action == "stop":
             self.stop()
             self.finished = True
+            self.error = getattr(self.strategy, "error", None)
         else:
             raise ValueError("Acao desconhecida: %s" % action)
 
@@ -202,6 +213,17 @@ class Controller:
             self.state = "stopped"
             done, self._action = self._action, None
             self.strategy.on_done(done)
+            return  # decide no proximo ciclo, com leituras do robo parado
+
+        if None in (readings["left"], readings["front"], readings["right"]):
+            self.drive.stop()
+            self.state = "stopped"
+            self._failed_reads += 1
+            if self._failed_reads >= self.max_failed_reads:
+                self.finished = True
+                self.error = "sensor"
+            return
+        self._failed_reads = 0
 
         self._execute(self.strategy.decide(self._walls(readings)))
 
