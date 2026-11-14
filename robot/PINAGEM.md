@@ -21,11 +21,11 @@ conexão individual ao ESP32.
 | Entrada do driver | Conexão no ESP32 | Função |
 | --- | --- | --- |
 | ENA | GPIO25 | PWM do motor esquerdo |
-| ENB | GPIO26 | PWM do motor direito |
+| ENB | GPIO26/27 | PWM do motor direito |
 | IN1 | GPIO18 | Sentido do motor esquerdo |
 | IN2 | GPIO19 | Sentido do motor esquerdo |
 | IN3 | GPIO23 | Sentido do motor direito |
-| IN4 | GPIO27 | Sentido do motor direito |
+| IN4 | GPIO27/14 | Sentido do motor direito |
 | GND | GND comum | Referência dos sinais |
 
 | Saídas do driver | Motor |
